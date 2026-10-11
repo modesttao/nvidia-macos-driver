@@ -1177,6 +1177,7 @@ static NVMTLFunction *nvmtl_empty_fragment(void) {
             0x00050036, 2, 1, 0, 3, 0x000200F8, 4, 0x000100FD, 0x00010038 };
         NVMTLFunction *f = [NVMTLFunction new];
         f->_spirv = [NSData dataWithBytes:w length:sizeof w]; f->_fname = @"(no fragment function)"; f->_stage = @"fragment";
+        f->_refl = @{};   /* nothing to reflect: no AIR, no resources */
         fn = f;
     });
     return fn;

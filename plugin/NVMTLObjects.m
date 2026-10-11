@@ -2435,6 +2435,8 @@ static NSDictionary *nvmtl_pixel_sampler_norm(NSDictionary *m) {
                     NVMTLFunction *vs=[NVMTLFunction new],*fs=ff?[NVMTLFunction new]:nil;
                     vs->_spirv=v;vs->_fname=vf->_fname;vs->_stage=vf->_stage;
                     if(fs){fs->_spirv=f;fs->_fname=ff->_fname;fs->_stage=ff->_stage;}
+                    /* same interface as the stages they specialize: carry their reflection (the variants have no AIR) */
+                    vs->_refl=nvmtl_function_reflection(vf)?:@{}; if(fs) fs->_refl=nvmtl_function_reflection(ff)?:@{};
                     MTLRenderPipelineDescriptor *desc=[_ps->_descriptor copy];desc.vertexFunction=vs;desc.fragmentFunction=fs;
                     NSError *error=nil;selected=(id)[(id<MTLDevice>)gNVMTLMainDevice newRenderPipelineStateWithDescriptor:desc error:&error];
                     if(!selected)why=error.description;

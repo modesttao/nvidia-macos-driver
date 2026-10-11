@@ -24,6 +24,13 @@ void nvlog(const char *fmt, ...);
 #import <CommonCrypto/CommonDigest.h>
 #define NVMTL_AIR_OPT   "/Library/GPUBundles/nvmtl/air-opt"
 #include <unistd.h>
+/* A cache hit is touched so the LRU trim keeps it. Sandboxed processes (iconservicesagent) may not set file times in
+ * their own cache, and each refused utimes() is a kernel sandbox report: thousands an hour. Stop after the first one. */
+static _Atomic int gCacheTouchDenied;
+static void nvmtl_cache_touch(const char *path) {
+    if (atomic_load_explicit(&gCacheTouchDenied, memory_order_relaxed)) return;
+    if (utimes(path, NULL) != 0 && (errno == EPERM || errno == EACCES)) atomic_store_explicit(&gCacheTouchDenied, 1, memory_order_relaxed);
+}
 static inline const char *nvmtl_pick_ll(const char *staged, const char *dev) {
     return access(staged, R_OK) == 0 ? staged : dev;
 }
@@ -704,7 +711,7 @@ NSData *nvmtl_compile_library_entry(NSData *air, NSString *ll, NSString *stage, 
         NSData *spvData = getenv("NVMTL_SPVCACHE_OFF") ? nil : [NSData dataWithContentsOfFile:spvp];
         int hit = spvData.length >= 20 && *(const uint32_t *)spvData.bytes == 0x07230203u;
         uint8_t *spv = NULL; size_t spvn = 0; char err[512] = { 0 };
-        if (hit) { gSpvHit++; utimes(spvp.fileSystemRepresentation, NULL); }
+        if (hit) { gSpvHit++; nvmtl_cache_touch(spvp.fileSystemRepresentation); }
         else {
             gSpvMiss++;
             if (xlate(ll.UTF8String, stage.UTF8String, &spv, &spvn, err, sizeof err) != 0) {
@@ -1041,7 +1048,11 @@ NSData *nvmtl_translate_with_fc(NSString *ll, NSString *stage, const uint32_t *i
     if (!ll || !stage.length) { if (err) *err = @"no AIR kept for this function"; return nil; }
     uint8_t *out = NULL; size_t out_len = 0; char e[512] = {0};
     if (xlate_fc(ll.UTF8String, stage.UTF8String, idx, sizes, payloads, n, &out, &out_len, e, sizeof e) != 0) {
-        nvlog("function constants: re-translate FAILED: %s", e);
+        /* A function that calls a visible function only translates once linked; the caller defers it to the link step,
+         * whose own refusals log "link FAILED". Logging the translator's text here put a false FAILED in every boot. */
+        if (strstr(e, "visible function reference") || strstr(e, "Metal visible function table"))
+            nvlog("function constants: %s calls a visible function - translated when it is linked", stage.UTF8String);
+        else nvlog("function constants: re-translate FAILED: %s", e);
         if (err) *err = [NSString stringWithUTF8String:e[0] ? e : "specialization failed"];
         return nil;
     }
@@ -1069,7 +1080,7 @@ NSData *nvmtl_translate_with_fc_cached(NSString *ll, NSString *stage, NSString *
     if (hit.length >= 20 && hit.length % 4 == 0) {
         memcpy(&magic, hit.bytes, 4);
         if (magic == 0x07230203) {
-            gFcHit++; utimes(path.fileSystemRepresentation, NULL);
+            gFcHit++; nvmtl_cache_touch(path.fileSystemRepresentation);
             nvlog("fc cache: HIT %s %lu B %.1f ms [%lu hit, %lu miss, %lu stored]", name.UTF8String,
                   (unsigned long)hit.length, (clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - t0) / 1e6,
                   gFcHit, gFcMiss, gFcStored);
@@ -1141,7 +1152,7 @@ static NSData *nvmtl_reflect_air_cached(NVMTLFunction *function, NSString *ll, N
         NSData *hit = [NSData dataWithContentsOfFile:path];
         id obj = hit.length ? [NSJSONSerialization JSONObjectWithData:hit options:0 error:NULL] : nil;
         if ([obj isKindOfClass:[NSDictionary class]] && [(NSDictionary *)obj count]) {
-            unsigned long hn = ++gRfHit; utimes(path.fileSystemRepresentation, NULL);
+            unsigned long hn = ++gRfHit; nvmtl_cache_touch(path.fileSystemRepresentation);
             if (!(hn & (hn - 1))) nvlog("refl cache: HIT %s %lu B %.2f ms [%lu hit, %lu miss, %lu stored]", function ? function->_fname.UTF8String : "?",
                                         (unsigned long)hit.length, (clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - t0) / 1e6, hn, (unsigned long)gRfMiss, (unsigned long)gRfStored);
             return hit;
@@ -1183,7 +1194,7 @@ static NSData *nvmtl_translate_link_cached(NSString *ll, NSString *stage, const 
     if (hit.length >= 20 && hit.length % 4 == 0) {
         memcpy(&magic, hit.bytes, 4);
         if (magic == 0x07230203) {
-            unsigned long hn = ++gLkHit; utimes(path.fileSystemRepresentation, NULL);
+            unsigned long hn = ++gLkHit; nvmtl_cache_touch(path.fileSystemRepresentation);
             if (!(hn & (hn - 1))) nvlog("link cache: HIT %lu B %.2f ms [%lu hit, %lu miss, %lu stored]", (unsigned long)hit.length,
                                         (clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - t0) / 1e6, hn, (unsigned long)gLkMiss, (unsigned long)gLkStored);
             return hit;
