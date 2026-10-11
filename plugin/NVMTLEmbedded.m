@@ -43,7 +43,7 @@ static id nvmtl_resid_lookup(uint64_t token)
     return resource;
 }
 
-uint64_t nvmtl_resid_for_texture(id t) { return nvmtl_resid_assign(t, 0, nvmtl_vk_bindless_put([(NVMTLTexture *)t nvview])); }
+uint64_t nvmtl_resid_for_texture(id t) { return nvmtl_resid_assign(t, 0, nvmtl_vk_bindless_put([(NVMTLTexture *)t nvsampleview])); }
 uint64_t nvmtl_resid_for_sampler(id s) { return nvmtl_resid_assign(s, NVMTL_RESID_SAMPLER, 0); }
 void nvmtl_resid_texture_gone(uint64_t token) { if (token & NVMTL_RESID_HEAP) nvmtl_vk_bindless_drop((uint32_t)(token & 0xffffffffu)); }
 
@@ -294,7 +294,7 @@ void nvmtl_bind_embedded(NVMTLCommandBuffer *cb, uint32_t set, NVMTLFunction *fn
             nvmtl_retain_resource(cb, t);
             [t nvmtlSurfaceIn];
             { NVMTLTexture *sr = t->_parent ? t->_parent : t; if (sr->_surf) embSurf = YES; }
-            if (nvmtl_vk_bind_texture_view(&cb->_c, set, slot, [t nvview]))
+            if (nvmtl_vk_bind_texture_view(&cb->_c, set, slot, [t nvsampleview]))
                 nvlog("embedded texture slot %u: bind FAILED", slot);
             nvmtl_vk_bind_storage_view(&cb->_c, set, slot, t->_stex ? [t nvview] : NULL);
         }
