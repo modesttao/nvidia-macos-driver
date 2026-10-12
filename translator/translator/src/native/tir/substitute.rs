@@ -13,7 +13,7 @@ fn lookup<'a>(substitutions: &'a Substitutions, name: &str) -> Option<&'a TypedV
     substitutions.get(name)
 }
 
-fn mentions_key(value: &LlValue, substitutions: &Substitutions) -> bool {
+pub(super) fn mentions_key(value: &LlValue, substitutions: &Substitutions) -> bool {
     match value {
         LlValue::Local(name) => lookup(substitutions, name).is_some(),
         LlValue::Vector(values) | LlValue::Array(values) | LlValue::Struct(values) => values
@@ -135,7 +135,7 @@ fn substitute_operand(operand: &mut TirOperand, substitutions: &Substitutions) {
     *operand = operand_from_typed_value(&value);
 }
 
-fn local_uses(value: &LlValue, uses: &mut Vec<String>) {
+pub(super) fn local_uses(value: &LlValue, uses: &mut Vec<String>) {
     match value {
         LlValue::Local(name) => uses.push(name.clone()),
         LlValue::Vector(values) | LlValue::Array(values) | LlValue::Struct(values) => {

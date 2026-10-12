@@ -41,7 +41,30 @@ pub(in crate::native) fn canonicalize_single_predecessor_phis(
             }
         }
     }
+    // Identity phis are still found one at a time, first in block order, exactly as before. What changed is when
+    // their replacements reach the blocks: `pending` collects them and is applied once at the end, instead of
+    // rewriting every instruction of every block after each removal (that rewrite was ~15 % of translating a large
+    // kernel). Every value the search compares is resolved through `pending`, so each decision sees what the
+    // one-at-a-time rewrite would have shown it.
+    let mut pending: HashMap<String, TypedValue> = HashMap::default();
     loop {
+        // A compound incoming value that names a pending phi (not seen in real AIR) is resolved the slow way:
+        // apply what is pending, then search again.
+        let compound_hit = !pending.is_empty()
+            && blocks.iter().any(|block| {
+                block.typed.as_ref().is_some_and(|typed| {
+                    typed.insts.iter().any(|inst| {
+                        inst.phi_incoming().as_ref().is_some_and(|(_, incoming)| {
+                            incoming.iter().any(|(value, _)| {
+                                !matches!(value, LlValue::Local(_)) && substitute::mentions_key(value, &pending)
+                            })
+                        })
+                    })
+                })
+            });
+        if compound_hit {
+            apply_pending_phi_replacements(blocks, &mut pending);
+        }
         let identity = blocks.iter().enumerate().find_map(|(block_index, block)| {
             let actual = predecessors.get(&block.name)?;
             if actual.len() != 1 {
@@ -57,9 +80,10 @@ pub(in crate::native) fn canonicalize_single_predecessor_phis(
                     let result = inst.result.as_ref()?;
                     let (ty, incoming) = inst.phi_incoming().as_ref()?;
                     let (value, _) = incoming.first()?;
-                    let is_identity = incoming
-                        .iter()
-                        .all(|(candidate, parent)| parent == predecessor && candidate == value);
+                    let value = resolve_pending(value, &pending);
+                    let is_identity = incoming.iter().all(|(candidate, parent)| {
+                        parent == predecessor && resolve_pending(candidate, &pending) == value
+                    });
                     let is_self_reference = matches!(value, LlValue::Local(name) if name == result);
                     (is_identity && !is_self_reference).then(|| {
                         (
@@ -82,11 +106,59 @@ pub(in crate::native) fn canonicalize_single_predecessor_phis(
             .expect("identity phi came from a typed carrier")
             .insts
             .remove(inst_index);
-        let substitutions = crate::fxhash::map_from([(result, replacement)]);
-        for block in blocks.iter_mut() {
-            if let Some(typed) = block.typed_mut() {
-                typed.substitute_values(&substitutions);
+        // A later removal can rename a local inside a compound replacement; only the immediate rewrite reaches it.
+        let mut inner = Vec::new();
+        substitute::local_uses(&replacement.value, &mut inner);
+        let compound = !matches!(replacement.value, LlValue::Local(_)) && !inner.is_empty();
+        pending.insert(result, replacement);
+        if compound {
+            apply_pending_phi_replacements(blocks, &mut pending);
+        }
+    }
+    apply_pending_phi_replacements(blocks, &mut pending);
+}
+
+/// Follows `value` through the identity phis removed so far (each maps to the value it forwarded).
+fn resolve_pending<'a>(value: &'a LlValue, pending: &'a HashMap<String, TypedValue>) -> &'a LlValue {
+    let mut value = value;
+    for _ in 0..=pending.len() {
+        match value {
+            LlValue::Local(name) => match pending.get(name) {
+                Some(next) => value = &next.value,
+                None => break,
+            },
+            _ => break,
+        }
+    }
+    value
+}
+
+/// What the one-at-a-time rewrite leaves at a use of each removed phi: a typed use takes the replacement whole, so a
+/// chain `%a -> %b -> %c` ends at `%b`'s replacement.
+fn apply_pending_phi_replacements(blocks: &mut [crate::native::cfg::BodyBlock], pending: &mut HashMap<String, TypedValue>) {
+    if pending.is_empty() {
+        return;
+    }
+    let resolved: HashMap<String, TypedValue> = pending
+        .iter()
+        .map(|(name, replacement)| {
+            let mut current = replacement;
+            for _ in 0..=pending.len() {
+                match &current.value {
+                    LlValue::Local(next) => match pending.get(next) {
+                        Some(further) => current = further,
+                        None => break,
+                    },
+                    _ => break,
+                }
             }
+            (name.clone(), current.clone())
+        })
+        .collect();
+    pending.clear();
+    for block in blocks.iter_mut() {
+        if let Some(typed) = block.typed_mut() {
+            typed.substitute_values(&resolved);
         }
     }
 }
