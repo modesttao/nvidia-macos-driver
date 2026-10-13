@@ -1,7 +1,10 @@
 // bench_vt_transfer: time VideoToolbox's Metal pixel transfer (the scaler Photos and Preview use). Every transfer makes
 // VT build its kernel again with new function constants, so this measures the driver's per-call cost: function creation,
 // pipeline lookup, reflection, variant selection, dispatch, and the result check.
+// build: clang -fobjc-arc -O1 -o bench_vt_transfer tools/bench_vt_transfer.m -framework Metal -framework Foundation -framework VideoToolbox -framework CoreVideo
 // usage: bench_vt_transfer [srcW srcH dstW dstH [iterations]]    default 4032 3024 1024 768 40
+// Every iteration transfers the same picture, so after the first one the driver's caches answer; the run is bad when a result
+// holds a flat zero column or differs from the first one.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <VideoToolbox/VideoToolbox.h>
@@ -38,7 +41,11 @@ int main(int argc, char **argv)
         for (int i = 0; i < n; i++) {
             CVPixelBufferRef dst = make_buffer(dw, dh, 0);
             VTPixelTransferSessionRef s = NULL;
-            VTPixelTransferSessionCreate(kCFAllocatorDefault, &s);
+            if (!dst || VTPixelTransferSessionCreate(kCFAllocatorDefault, &s) || !s) {
+                printf("transfer %d: cannot create the destination or the session\n", i); bad++;
+                if (dst) CFRelease(dst);
+                continue;
+            }
             double t0 = now_ms();
             OSStatus st = VTPixelTransferSessionTransferImage(s, src, dst);
             double dt = now_ms() - t0;
@@ -46,14 +53,18 @@ int main(int argc, char **argv)
             // the output must not hold a flat zero column: sample 64 columns of the luma plane
             CVPixelBufferLockBaseAddress(dst, kCVPixelBufferLock_ReadOnly);
             uint8_t *y = CVPixelBufferGetBaseAddressOfPlane(dst, 0); size_t row = CVPixelBufferGetBytesPerRowOfPlane(dst, 0);
-            int zero = 0; for (int c = 0; c < dw; c += dw / 64) { int nz = 0; for (int r = 0; r < dh; r += 8) nz |= y[(size_t)r * row + c] != 0; zero += !nz; }
+            const int step = dw / 64 > 0 ? dw / 64 : 1;
+            int zero = 0; for (int c = 0; c < dw; c += step) { int nz = 0; for (int r = 0; r < dh; r += 8) nz |= y[(size_t)r * row + c] != 0; zero += !nz; }
             CVPixelBufferUnlockBaseAddress(dst, kCVPixelBufferLock_ReadOnly);
             if (zero) bad++;
-            if (i == 0) {   // fingerprint of the whole first result (both planes), to compare two drivers byte for byte
+            {   // fingerprint of the whole result (both planes): every run must match the first, and two drivers can be compared
+                uint64_t fp = 1469598103934665603ull;
                 CVPixelBufferLockBaseAddress(dst, kCVPixelBufferLock_ReadOnly);
                 for (int p = 0; p < 2; p++) { const uint8_t *b = CVPixelBufferGetBaseAddressOfPlane(dst, p); size_t r = CVPixelBufferGetBytesPerRowOfPlane(dst, p), ph = CVPixelBufferGetHeightOfPlane(dst, p), pw = CVPixelBufferGetWidthOfPlane(dst, p) * (p ? 2 : 1);
-                    for (size_t yy = 0; yy < ph; yy++) for (size_t xx = 0; xx < pw; xx++) sum = (sum ^ b[yy * r + xx]) * 1099511628211ull; }
+                    for (size_t yy = 0; yy < ph; yy++) for (size_t xx = 0; xx < pw; xx++) fp = (fp ^ b[yy * r + xx]) * 1099511628211ull; }
                 CVPixelBufferUnlockBaseAddress(dst, kCVPixelBufferLock_ReadOnly);
+                if (i == 0) sum = fp;
+                else if (fp != sum) { printf("transfer %d: the output differs from the first run\n", i); bad++; }
             }
             if (i == 0) first = dt; else { total += dt; if (dt < best) best = dt; }
             VTPixelTransferSessionInvalidate(s); CFRelease(s); CFRelease(dst);
