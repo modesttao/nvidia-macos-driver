@@ -47,6 +47,13 @@ class LoginWindowOnly(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("restarted WindowServer once", log)
 
+    def test_login_window_owned_by_windowserver_still_restarts(self):
+        # On macOS 15 /dev/console belongs to _windowserver, not root, while nobody is logged in
+        rc, log = run("_windowserver")
+        self.assertEqual(rc, 0)
+        self.assertIn("restarted WindowServer once", log)
+        self.assertNotIn("skipped the restart", log)
+
     def test_auto_login_is_never_interrupted(self):
         rc, log = run("root", autologin="jake")
         self.assertIn("skipped the restart: auto-login is on", log)

@@ -1401,7 +1401,7 @@ CONSOLE=$(stat -f%Su /dev/console 2>/dev/null)
 if [ -n "$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null)" ]; then
   echo "$(date) skipped the restart: auto-login is on (a restart would end the automatic session)" >> "$LOG" 2>&1; exit 0
 fi
-if [ -n "$CONSOLE" ] && [ "$CONSOLE" != root ]; then
+if [ -n "$CONSOLE" ] && [ "$CONSOLE" != root ] && [ "$CONSOLE" != _windowserver ]; then
   echo "$(date) skipped the restart: $CONSOLE is already logged in" >> "$LOG" 2>&1; exit 0
 fi
 P=$(pgrep -x WindowServer); [ -n "$P" ] && { kill -TERM $P 2>/dev/null; sleep 2; pgrep -x WindowServer >/dev/null 2>&1 && kill -9 $P 2>/dev/null; }
